@@ -17,6 +17,8 @@ export interface Message {
 interface GameState {
   world: World | null;
   setWorld: (world: World) => void;
+  campaignName: string;
+  setCampaignName: (name: string) => void;
   characterName: string;
   setCharacterName: (name: string) => void;
   characterClass: CharacterClass | null;
@@ -40,6 +42,7 @@ const GameContext = createContext<GameState | undefined>(undefined);
 
 export function GameProvider({ children }: { children: ReactNode }) {
   const [world, setWorld] = useState<World | null>(null);
+  const [campaignName, setCampaignName] = useState('');
   const [characterName, setCharacterName] = useState('');
   const [characterClass, setCharacterClass] = useState<CharacterClass | null>(null);
   const [characterDescription, setCharacterDescription] = useState('');
@@ -48,6 +51,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
   const resetGame = () => {
     setWorld(null);
+    setCampaignName('');
     setCharacterName('');
     setCharacterClass(null);
     setCharacterDescription('');
@@ -60,6 +64,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
       value={{
         world,
         setWorld,
+        campaignName,
+        setCampaignName,
         characterName,
         setCharacterName,
         characterClass,

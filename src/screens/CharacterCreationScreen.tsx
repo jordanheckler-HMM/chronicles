@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { useGame, CharacterClass } from '../GameContext';
@@ -14,12 +14,21 @@ export default function CharacterCreationScreen() {
     setCharacterClass,
     characterDescription,
     setCharacterDescription,
+    world,
+    setCampaignName,
   } = useGame();
 
   const isComplete = characterName.trim() !== '' && characterClass !== null && characterDescription.trim() !== '';
 
+  useEffect(() => {
+    if (!world) {
+      navigate('/world', { replace: true });
+    }
+  }, [navigate, world]);
+
   const handleBegin = () => {
     if (isComplete) {
+      setCampaignName(characterName.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-'));
       navigate('/game');
     }
   };

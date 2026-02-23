@@ -1,20 +1,64 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Chronicles
 
-# Run and deploy your AI Studio app
+Chronicles is a solo AI RPG desktop app built with React + Tauri.
 
-This contains everything you need to run your app locally.
+## What runs today
 
-View your app in AI Studio: https://ai.studio/apps/e2aab844-89b8-429f-9921-9a12b42d1bdc
+- Frontend flow: Home -> World -> Character -> Main game
+- Local Ollama chat as the dungeon master
+- Streaming responses with 3 choices per turn
+- Campaign save/load via Tauri backend file storage
+- In-app updater check/install (desktop builds)
 
-## Run Locally
+## Prerequisites
 
-**Prerequisites:**  Node.js
+- Node.js 20+
+- Rust toolchain
+- Ollama running locally (`http://localhost:11434`)
+- At least one local Ollama model (default fallback is `mistral`)
 
+## Development
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run web mode:
+
+```bash
+npm run dev
+```
+
+Run Tauri desktop mode:
+
+```bash
+npm run tauri dev
+```
+
+## Tests and checks
+
+```bash
+npm run lint
+npm run test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+## Release (GitHub)
+
+- A GitHub Actions workflow is configured at `.github/workflows/release.yml`.
+- Pushing a tag like `v0.0.1` builds and publishes Tauri artifacts to GitHub Releases.
+- Updater artifacts are enabled through `src-tauri/tauri.conf.json` (`bundle.createUpdaterArtifacts`).
+- The workflow uses these repo secrets:
+  - `TAURI_SIGNING_PRIVATE_KEY`
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Create and push a release tag:
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```

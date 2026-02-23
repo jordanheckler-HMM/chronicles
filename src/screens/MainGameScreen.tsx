@@ -1,11 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Heart, Sword, Coins, Send } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useGame, Message, Stats } from '../GameContext';
+import { useNavigate } from 'react-router-dom';
+import { useGame, Message } from '../GameContext';
+import {
+  createCampaignName,
+  getSelectedModel,
+  saveCampaign,
+  streamChat,
+} from '../lib/backend';
+import {
+  extractStatsFromResponse,
+  splitNarrativeAndChoices,
+  stripChoicePrefix,
+} from '../lib/parsing';
 
 export default function MainGameScreen() {
+  const navigate = useNavigate();
   const {
     world,
+    campaignName,
+    setCampaignName,
     characterName,
     characterClass,
     characterDescription,
@@ -18,8 +33,41 @@ export default function MainGameScreen() {
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [currentStream, setCurrentStream] = useState('');
+  const [selectedModel, setSelectedModel] = useState('mistral');
+  const [modelLoaded, setModelLoaded] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'error'>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialized = useRef(false);
+
+  useEffect(() => {
+    if (!world || !characterName || !characterClass || !characterDescription) {
+      navigate('/', { replace: true });
+    }
+  }, [characterClass, characterDescription, characterName, navigate, world]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadModel = async () => {
+      try {
+        const model = await getSelectedModel();
+        if (active) {
+          setSelectedModel(model);
+        }
+      } finally {
+        if (active) {
+          setModelLoaded(true);
+        }
+      }
+    };
+
+    void loadModel();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Auto-scroll
   useEffect(() => {
@@ -29,68 +77,109 @@ export default function MainGameScreen() {
   }, [history, currentStream]);
 
   useEffect(() => {
+    if (!modelLoaded || !world || !characterName || !characterClass || !characterDescription) {
+      return;
+    }
+
     if (!initialized.current && history.length === 0) {
       initialized.current = true;
+
       const systemPrompt = `You are a dungeon master running a ${world} RPG. Describe vivid scenes in 2-3 sentences. Always end your response with exactly 3 numbered choices the player can make. After your narrative, append a hidden JSON block on its own line in this exact format: {"health": 100, "weapon": "Dagger", "gold": 0} — update these values based on what happens in the story. Never break character. Never acknowledge you are an AI.`;
-      
+
       const initialUserMessage = `I am ${characterName}, a ${characterClass}. ${characterDescription}. I am ready to begin my journey.`;
 
       const initialHistory: Message[] = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: initialUserMessage },
       ];
-      
-      setHistory(initialHistory);
-      sendToOllama(initialHistory);
-    }
-  }, []);
 
-  const sendToOllama = async (messages: Message[]) => {
+      setHistory(initialHistory);
+      void sendToBackend(initialHistory, selectedModel);
+    }
+  }, [
+    characterClass,
+    characterDescription,
+    characterName,
+    history.length,
+    modelLoaded,
+    selectedModel,
+    setHistory,
+    world,
+  ]);
+
+  useEffect(() => {
+    if (!world || !characterName || !characterClass || history.length === 0) {
+      return;
+    }
+
+    const resolvedCampaignName = campaignName || createCampaignName(characterName, world);
+    if (!campaignName) {
+      setCampaignName(resolvedCampaignName);
+    }
+
+    let cancelled = false;
+
+    const persistCampaign = async () => {
+      setSaveStatus('saving');
+      setSaveError(null);
+
+      try {
+        await saveCampaign(resolvedCampaignName, {
+          world,
+          characterName,
+          characterClass,
+          characterDescription,
+          stats,
+          history,
+          model: selectedModel,
+          updatedAt: new Date().toISOString(),
+        });
+
+        if (!cancelled) {
+          setSaveStatus('idle');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSaveStatus('error');
+          setSaveError(error instanceof Error ? error.message : 'Failed to save campaign');
+        }
+      }
+    };
+
+    void persistCampaign();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    campaignName,
+    characterClass,
+    characterDescription,
+    characterName,
+    history,
+    selectedModel,
+    setCampaignName,
+    stats,
+    world,
+  ]);
+
+  const sendToBackend = async (messages: Message[], model: string) => {
     setIsThinking(true);
     setCurrentStream('');
     let fullResponse = '';
 
     try {
-      const response = await fetch('http://localhost:11434/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'mistral',
-          messages: messages,
-          stream: true,
-        }),
+      fullResponse = await streamChat(model, messages, (token) => {
+        setCurrentStream((prev) => prev + token);
       });
 
-      if (!response.body) throw new Error('No response body');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter((line) => line.trim() !== '');
-
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line);
-            if (parsed.message?.content) {
-              fullResponse += parsed.message.content;
-              setCurrentStream(fullResponse);
-            }
-          } catch (e) {
-            // Ignore parse errors for incomplete chunks
-          }
-        }
-      }
-
       processAiResponse(fullResponse, messages);
-
     } catch (error) {
-      console.error('Ollama error:', error);
-      const errorMsg = 'The Dungeon Master is currently unavailable. (Ensure Ollama is running locally with the mistral model)';
+      console.error('Chat error:', error);
+      const errorMsg =
+        error instanceof Error
+          ? error.message
+          : 'The Dungeon Master is currently unavailable. Ensure Ollama is running locally.';
       setHistory([...messages, { role: 'assistant', content: errorMsg }]);
     } finally {
       setIsThinking(false);
@@ -99,58 +188,41 @@ export default function MainGameScreen() {
   };
 
   const processAiResponse = (fullResponse: string, currentHistory: Message[]) => {
-    let cleanResponse = fullResponse;
-    
-    // Extract JSON block at the end
-    const jsonRegex = /\{[^{}]*"health"\s*:\s*\d+.*?\}/s;
-    const match = fullResponse.match(jsonRegex);
-    
-    if (match) {
-      try {
-        const parsedStats = JSON.parse(match[0]) as Stats;
-        setStats(parsedStats);
-        cleanResponse = fullResponse.replace(match[0], '').trim();
-      } catch (e) {
-        console.error('Failed to parse stats JSON', e);
-      }
+    const parsed = extractStatsFromResponse(fullResponse);
+
+    if (parsed.stats) {
+      setStats(parsed.stats);
     }
 
-    setHistory([...currentHistory, { role: 'assistant', content: cleanResponse }]);
+    const content = parsed.cleanResponse || 'The Dungeon Master stays silent.';
+    setHistory([...currentHistory, { role: 'assistant', content }]);
   };
 
   const handleSend = (text: string) => {
-    if (!text.trim() || isThinking) return;
-    
-    // Strip the "1. " prefix if the user clicked a choice
-    const cleanText = text.replace(/^[1-3]\.\s*/, '');
-    
+    if (!text.trim() || isThinking) {
+      return;
+    }
+
+    const cleanText = stripChoicePrefix(text);
+
     const newHistory: Message[] = [...history, { role: 'user', content: cleanText }];
     setHistory(newHistory);
     setInput('');
-    sendToOllama(newHistory);
+    void sendToBackend(newHistory, selectedModel);
   };
 
   const renderMessageContent = (content: string, isStreaming: boolean = false) => {
-    const lines = content.split('\n');
-    const narrativeLines: string[] = [];
-    const choices: string[] = [];
-
-    lines.forEach(line => {
-      const trimmed = line.trim();
-      if (/^[1-3]\.\s/.test(trimmed)) {
-        choices.push(trimmed);
-      } else if (trimmed && !trimmed.startsWith('{') && !trimmed.endsWith('}')) {
-        narrativeLines.push(trimmed);
-      }
-    });
+    const { narrative, choices } = splitNarrativeAndChoices(content);
 
     return (
       <div className="flex flex-col gap-6 w-full">
         <div className="text-[#e8dcc4]/90 leading-relaxed font-serif text-lg whitespace-pre-wrap">
-          {narrativeLines.join('\n')}
-          {isStreaming && <span className="inline-block w-2 h-5 ml-1 bg-[#e8dcc4]/70 animate-pulse align-middle" />}
+          {narrative}
+          {isStreaming && (
+            <span className="inline-block w-2 h-5 ml-1 bg-[#e8dcc4]/70 animate-pulse align-middle" />
+          )}
         </div>
-        
+
         {!isStreaming && choices.length > 0 && (
           <div className="flex flex-col gap-3 mt-4 w-full">
             {choices.map((choice, idx) => (
@@ -175,8 +247,7 @@ export default function MainGameScreen() {
   return (
     <div className="h-screen bg-[#0a0a0a] flex flex-col font-serif relative overflow-hidden">
       <div className="absolute inset-0 opacity-10 bg-[url('https://picsum.photos/seed/darkwood/1920/1080?blur=2')] bg-cover bg-center pointer-events-none mix-blend-overlay" />
-      
-      {/* Top Stats Bar */}
+
       <div className="h-16 border-b border-[#e8dcc4]/10 bg-black/40 backdrop-blur-sm flex items-center justify-between px-8 z-10 shrink-0">
         <div className="flex items-center gap-8">
           <div className="flex items-center gap-2 text-red-400">
@@ -192,19 +263,26 @@ export default function MainGameScreen() {
             <span className="font-mono text-lg">{stats.gold}</span>
           </div>
         </div>
-        <div className="text-[#e8dcc4]/40 text-sm uppercase tracking-widest">
-          {characterName} • {characterClass}
+        <div className="text-[#e8dcc4]/40 text-xs uppercase tracking-widest text-right">
+          <div>
+            {characterName} • {characterClass}
+          </div>
+          <div>Model: {selectedModel}</div>
+          <div>
+            Save:{' '}
+            {saveStatus === 'saving'
+              ? 'Saving...'
+              : saveStatus === 'error'
+                ? 'Error'
+                : 'OK'}
+          </div>
         </div>
       </div>
 
-      {/* Main Story Area */}
-      <div 
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto p-8 z-10 scroll-smooth"
-      >
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 z-10 scroll-smooth">
         <div className="max-w-3xl mx-auto flex flex-col gap-12 pb-8">
-          {history.filter(m => m.role !== 'system').map((msg, idx) => (
-            <motion.div 
+          {history.filter((m) => m.role !== 'system').map((msg, idx) => (
+            <motion.div
               key={idx}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -215,19 +293,13 @@ export default function MainGameScreen() {
                   {msg.content}
                 </div>
               ) : (
-                <div className="w-full">
-                  {renderMessageContent(msg.content)}
-                </div>
+                <div className="w-full">{renderMessageContent(msg.content)}</div>
               )}
             </motion.div>
           ))}
-          
+
           {isThinking && currentStream && (
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="w-full"
-            >
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full">
               {renderMessageContent(currentStream, true)}
             </motion.div>
           )}
@@ -238,10 +310,11 @@ export default function MainGameScreen() {
               The DM is thinking...
             </div>
           )}
+
+          {saveError && <p className="text-xs text-red-400/80 font-sans">{saveError}</p>}
         </div>
       </div>
 
-      {/* Input Area */}
       <div className="p-6 bg-gradient-to-t from-black via-black/90 to-transparent z-10 shrink-0">
         <div className="max-w-3xl mx-auto relative">
           <input
