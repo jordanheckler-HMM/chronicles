@@ -50,7 +50,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 ## Release (GitHub)
 
 - A GitHub Actions workflow is configured at `.github/workflows/release.yml`.
-- Pushing a tag like `v0.0.1` builds and publishes Tauri artifacts to GitHub Releases.
+- Pushing a tag like `v0.0.3` builds and publishes Tauri artifacts to GitHub Releases.
 - Updater artifacts are enabled through `src-tauri/tauri.conf.json` (`bundle.createUpdaterArtifacts`).
 - The workflow uses these repo secrets:
   - `TAURI_SIGNING_PRIVATE_KEY`
@@ -59,6 +59,6 @@ cargo check --manifest-path src-tauri/Cargo.toml
 Create and push a release tag:
 
 ```bash
-git tag v0.0.1
-git push origin v0.0.1
+git tag v0.0.3
+git push origin v0.0.3
 ```

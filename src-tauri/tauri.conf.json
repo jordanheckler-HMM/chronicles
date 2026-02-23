@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Chronicles",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "identifier": "com.hymetalab.chronicles",
   "build": {
     "frontendDist": "../dist",

@@ -2,6 +2,7 @@ use crate::config;
 use futures_util::StreamExt;
 use reqwest;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 
@@ -47,6 +48,45 @@ struct TagsResponse {
 struct TagModel {
     name: Option<String>,
     model: Option<String>,
+}
+
+fn parse_models_from_tags(body: TagsResponse) -> Vec<String> {
+    body.models
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| m.name.or(m.model))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn parse_models_from_ollama_list_output(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .skip(1) // Skip header line
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            // First column is the model name.
+            trimmed.split_whitespace().next().map(|s| s.trim().to_string())
+        })
+        .filter(|name| !name.is_empty() && name != "NAME")
+        .collect()
+}
+
+fn merge_models<I>(sources: I) -> Vec<String>
+where
+    I: IntoIterator<Item = Vec<String>>,
+{
+    let mut merged: BTreeSet<String> = BTreeSet::new();
+    for models in sources {
+        for model in models {
+            merged.insert(model);
+        }
+    }
+    merged.into_iter().collect()
 }
 
 // ─── Chat command ────────────────────────────────────────────────────
@@ -150,12 +190,7 @@ pub async fn check_ollama_status() -> Result<OllamaStatus, String> {
                     .await
                     .unwrap_or(TagsResponse { models: None });
 
-                let models = body
-                    .models
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|m| m.name.or(m.model))
-                    .collect();
+                let models = parse_models_from_tags(body);
 
                 Ok(OllamaStatus {
                     running: true,
@@ -179,29 +214,42 @@ pub async fn check_ollama_status() -> Result<OllamaStatus, String> {
 
 #[tauri::command]
 pub async fn get_available_models() -> Result<Vec<String>, String> {
-    let output = Command::new("ollama")
-        .arg("list")
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run 'ollama list': {}", e))?;
+    let mut sources: Vec<Vec<String>> = Vec::new();
+    let mut had_error = false;
 
-    if !output.status.success() {
-        return Err("Failed to list Ollama models".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    match client.get("http://localhost:11434/api/tags").send().await {
+        Ok(response) if response.status().is_success() => {
+            let body: TagsResponse = response
+                .json()
+                .await
+                .unwrap_or(TagsResponse { models: None });
+            sources.push(parse_models_from_tags(body));
+        }
+        _ => {
+            had_error = true;
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let models: Vec<String> = stdout
-        .lines()
-        .skip(1) // Skip header line
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            // First column is the model name
-            trimmed.split_whitespace().next().map(|s| s.to_string())
-        })
-        .collect();
+    match Command::new("ollama").arg("list").output().await {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            sources.push(parse_models_from_ollama_list_output(&stdout));
+        }
+        _ => {
+            had_error = true;
+        }
+    }
+
+    let models = merge_models(sources);
+
+    if models.is_empty() && had_error {
+        return Err("Failed to list Ollama models".to_string());
+    }
 
     Ok(models)
 }
@@ -218,4 +266,43 @@ pub async fn set_selected_model(app: AppHandle, model_name: String) -> Result<()
     cfg.selected_model = model_name;
     config::save_config(&app, &cfg)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_models, parse_models_from_ollama_list_output, parse_models_from_tags, TagModel, TagsResponse};
+
+    #[test]
+    fn parse_ollama_list_output_extracts_model_names() {
+        let output = "NAME                     ID              SIZE      MODIFIED\nmistral:latest           abc123          4.1 GB    2 days ago\nllama3.1:8b              def456          4.9 GB    1 day ago\n";
+        let models = parse_models_from_ollama_list_output(output);
+        assert_eq!(models, vec!["mistral:latest", "llama3.1:8b"]);
+    }
+
+    #[test]
+    fn parse_tags_extracts_name_or_model_field() {
+        let tags = TagsResponse {
+            models: Some(vec![
+                TagModel {
+                    name: Some("gemma3:4b".to_string()),
+                    model: None,
+                },
+                TagModel {
+                    name: None,
+                    model: Some("deepseek-r1:8b".to_string()),
+                },
+            ]),
+        };
+        let models = parse_models_from_tags(tags);
+        assert_eq!(models, vec!["gemma3:4b", "deepseek-r1:8b"]);
+    }
+
+    #[test]
+    fn merge_models_dedupes_and_sorts() {
+        let merged = merge_models(vec![
+            vec!["mistral:latest".to_string(), "llama3.1:8b".to_string()],
+            vec!["llama3.1:8b".to_string(), "gemma3:4b".to_string()],
+        ]);
+        assert_eq!(merged, vec!["gemma3:4b", "llama3.1:8b", "mistral:latest"]);
+    }
 }
