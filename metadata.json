@@ -1,0 +1,5 @@
+{
+  "name": "Chronicles",
+  "description": "A solo AI RPG game where a local Ollama model acts as the dungeon master.",
+  "requestFramePermissions": []
+}
