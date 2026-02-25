@@ -174,3 +174,8 @@ Core gameplay inference is local-only by implementation:
 - no cloud LLM endpoint is used in the chat execution path
 
 This constraint does not remove all network usage (for example updater endpoint checks and externally hosted UI assets).
+
+## License
+
+This project is currently distributed as source-available, all rights reserved.
+See `LICENSE` for terms.
